@@ -1,6 +1,6 @@
 from collections import UserDict
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 
 
@@ -187,7 +187,10 @@ def show_all_contacts(address_book):
 def search_contact(address_book, query):
     if not query:
         raise ValueError("Please provide a search query")
-    matching_contacts = [str(record) for name, record in address_book.items() if query.lower() in name.lower()]
+    matching_contacts = []
+    for record in address_book.values():
+        if query.lower() in record.name.value.lower() or any(query in phone.value for phone in record.phones):
+            matching_contacts.append(str(record))
     if not matching_contacts:
         return "No matching contacts found"
     return "\n".join(matching_contacts)
