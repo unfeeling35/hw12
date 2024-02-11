@@ -1,9 +1,7 @@
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
 from collections import UserDict
 import re
-import json
 from datetime import datetime, timedelta
+import json
 
 
 class Field:
@@ -109,118 +107,123 @@ class AddressBook(UserDict):
         for i in range(0, len(records), n):
             yield records[i:i + n]
 
-    def save_to_file(self, filename):
-        with open(filename, 'w') as file:
-            json_data = {key: record.__dict__ for key, record in self.data.items()}
-            json.dump(json_data, file, default=lambda o: o.__dict__, indent=4)
 
-    def load_from_file(self, filename):
+def load_contacts(filename):
+    try:
         with open(filename, 'r') as file:
-            self.data = json.load(file)
-            for key, record in self.data.items():
-                name = record['name']['_Field__value']
-                birthday = record.get('birthday', {}).get('_Field__value', None)
-                record_obj = Record(name, birthday)
+            data = json.load(file)
+            address_book = AddressBook()
+            for name, record in data.items():
+                new_record = Record(name, record.get('birthday'))
                 for phone in record.get('phones', []):
-                    record_obj.add_phone(phone['_Field__value'])
-                self.data[key] = record_obj
-
-    def search(self, query):
-        result = []
-        for record in self.data.values():
-            if query.lower() in record.name.value.lower():
-                result.append(record)
-                continue
-            for phone in record.phones:
-                if query in phone.value:
-                    result.append(record)
-                    break
-        return result
+                    new_record.add_phone(phone)
+                address_book.add_record(new_record)
+            return address_book
+    except FileNotFoundError:
+        return AddressBook()
 
 
-address_book = AddressBook()
+def save_contacts(address_book, filename):
+    data = {record.name.value: {"phones": [phone.value for phone in record.phones],
+                                "birthday": record.birthday.value if record.birthday else None}
+            for record in address_book.data.values()}
+    with open(filename, 'w') as file:
+        json.dump(data, file)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text('Привет! Я твой адресный бот. Введи /help чтобы увидеть доступные команды.')
+def input_error(handler):
+    def wrapper(*args, **kwargs):
+        try:
+            return handler(*args, **kwargs)
+        except KeyError:
+            return "There is no such contact"
+        except ValueError as e:
+            return str(e)
+        except IndexError:
+            return "Enter user name"
+    return wrapper
 
 
-async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = ('Доступные команды:\n'
-                 '/start - начать работу\n'
-                 '/help - вывести эту справку\n'
-                 '/add_contact <имя> <телефон> [день рождения] - добавить контакт\n'
-                 '/delete_contact <имя> - удалить контакт\n'
-                 '/find_contact <имя> - найти контакт\n'
-                 '/show_all - показать все контакты\n'
-                 '/birthday <имя> - дни до дня рождения')
-    await update.message.reply_text(help_text)
+@input_error
+def add_contact(address_book, name, phone):
+    if not name or not phone:
+        raise ValueError("Give me name and phone please")
+    if address_book.find(name):
+        raise ValueError("Contact already exists")
+    new_record = Record(name)
+    new_record.add_phone(phone)
+    address_book.add_record(new_record)
+    return f"Contact {name} added"
 
 
-async def add_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        name, phone, *birthday = context.args
-        birthday = birthday[0] if birthday else None
-        record = Record(name, birthday)
-        record.add_phone(phone)
-        address_book.add_record(record)
-        await update.message.reply_text(f'Контакт {name} добавлен.')
-    except ValueError as e:
-        await update.message.reply_text(f'Ошибка при добавлении контакта: {e}')
-    except Exception as e:
-        await update.message.reply_text(f'Произошла ошибка: {e}')
-
-
-async def delete_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        name = ' '.join(context.args)
-        address_book.delete(name)
-        await update.message.reply_text(f'Контакт {name} удален.')
-    except KeyError:
-        await update.message.reply_text('Контакт не найден.')
-
-
-async def find_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = ' '.join(context.args)
+@input_error
+def change_contact(address_book, name, phone):
+    if not name or not phone:
+        raise ValueError("Give me name and phone please")
     record = address_book.find(name)
-    if record:
-        await update.message.reply_text(str(record))
-    else:
-        await update.message.reply_text('Контакт не найден.')
+    if record is None:
+        raise KeyError
+    record.phones = []
+    record.add_phone(phone)
+    return f"Contact {name} updated"
 
 
-async def show_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    contacts = '\n'.join(str(record) for record in address_book.data.values())
-    if contacts:
-        await update.message.reply_text(contacts)
-    else:
-        await update.message.reply_text('Адресная книга пуста.')
-
-
-async def birthday(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = ' '.join(context.args)
+@input_error
+def show_phone(address_book, name):
     record = address_book.find(name)
-    if record and record.birthday:
-        days = record.days_to_birthday()
-        await update.message.reply_text(f'До дня рождения {name} осталось {days} дней.')
-    else:
-        await update.message.reply_text('День рождения не указан или контакт не найден.')
+    if record is None:
+        raise KeyError
+    return ', '.join([phone.value for phone in record.phones])
+
+
+@input_error
+def show_all_contacts(address_book):
+    if not address_book:
+        return "Contact list is empty"
+    return "\n".join([str(record) for record in address_book.data.values()])
+
+
+@input_error
+def search_contact(address_book, query):
+    if not query:
+        raise ValueError("Please provide a search query")
+    matching_contacts = [str(record) for name, record in address_book.items() if query.lower() in name.lower()]
+    if not matching_contacts:
+        return "No matching contacts found"
+    return "\n".join(matching_contacts)
 
 
 def main():
-    # Замените 'YOUR_TOKEN' на токен вашего бота
-    application = Application.builder().token('6785967564:AAGvbYxUsun_WNyGmZ9O8yhmCqiztHUhdyY').build()
+    filename = 'contacts.db'
+    address_book = load_contacts(filename)
 
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('help', help))
-    application.add_handler(CommandHandler('add_contact', add_contact))
-    application.add_handler(CommandHandler('delete_contact', delete_contact))
-    application.add_handler(CommandHandler('find_contact', find_contact))
-    application.add_handler(CommandHandler('show_all', show_all))
-    application.add_handler(CommandHandler('birthday', birthday))
+    while True:
+        user_input = input(">").lower()
+        command, *args = user_input.split(maxsplit=1)
 
-    application.run_polling()
+        if command == "hello":
+            print("How can I help you?")
+        elif user_input in ["good bye", "close", "exit"]:
+            print("Good bye!")
+            save_contacts(address_book, filename)
+            break
+        elif command == "add":
+            name, phone = (args[0].split() + [None, None])[:2]
+            print(add_contact(address_book, name, phone))
+        elif command == "change":
+            name, phone = (args[0].split() + [None, None])[:2]
+            print(change_contact(address_book, name, phone))
+        elif command == "phone":
+            name = args[0]
+            print(show_phone(address_book, name))
+        elif user_input == "show all":
+            print(show_all_contacts(address_book))
+        elif command == "search":
+            query = args[0] if args else ""
+            print(search_contact(address_book, query))
+        else:
+            print("Unknown command or wrong format")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
